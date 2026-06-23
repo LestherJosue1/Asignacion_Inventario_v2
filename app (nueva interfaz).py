@@ -2,123 +2,125 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# Configuración de la página de Streamlit
-st.set_page_config(page_title="Core APS - Optimización de Asignación", layout="wide")
+# Configuración de la interfaz
+st.set_page_config(page_title="Core APS - Asignación Integrada", layout="wide")
 
 st.title("🏭 Sistema de Asignación de Abasto y Cuotas (Model NV2)")
-st.subheader("Arquitectura de Optimización Industrial en Cascada")
+st.subheader("Optimización en Cascada (Matriz de Suministro Integrada)")
 
-def clean_key(text):
-    """Normaliza de forma estricta las llaves de cruce industrial."""
-    if pd.isna(text):
-        return ""
-    text_str = str(text).strip().upper()
-    if '|' in text_str:
-        text_str = text_str.split('|')[0].strip()
-    return text_str
+# --- 1. CARGA DEL ARCHIVO ÚNICO ---
+st.sidebar.header("📁 Carga de Datos")
+uploaded_file = st.sidebar.file_uploader("Subir archivo DETALLE o REPORTE (CSV)", type=["csv"])
 
-# --- 1. CARGA DE ARCHIVOS EN LA INTERFAZ ---
-st.sidebar.header("📁 Carga de Insumos (Formatos CSV)")
-uploaded_detalle = st.sidebar.file_uploader("Subir DETALLE (Demanda)", type=["csv"])
-uploaded_inv = st.sidebar.file_uploader("Subir INV_LIBRE (Inventario)", type=["csv"])
-
-if uploaded_detalle and uploaded_inv:
-    # Leer datos subidos por el usuario
-    df_detalle = pd.read_csv(uploaded_detalle)
-    df_inv = pd.read_csv(uploaded_inv)
+if uploaded_file:
+    # Leer el archivo único
+    df = pd.read_csv(uploaded_file)
+    st.success("¡Archivo cargado correctamente!")
     
-    st.success("¡Archivos cargados correctamente de forma interna!")
+    # Mostrar columnas detectadas para seguridad del usuario
+    columnas = df.columns.tolist()
     
-    # --- 2. PROCESAMIENTO Y NORMALIZACIÓN ---
-    for df in [df_detalle, df_inv]:
-        for col in df.columns:
-            if 'LINK' in col.upper():
-                df[f'{col}_CLEAN'] = df[col].apply(clean_key)
-            if 'FAMILIA' in col.upper():
-                df[f'{col}_CLEAN'] = df[col].apply(clean_key)
-                
-    link_col_det = 'LINK2_CLEAN' if 'LINK2_CLEAN' in df_detalle.columns else 'LINK_CLEAN'
-    link_col_inv = 'LINK2_CLEAN' if 'LINK2_CLEAN' in df_inv.columns else 'LINK_CLEAN'
-    fam_col_det = 'FAMILIA_CLEAN' if 'FAMILIA_CLEAN' in df_detalle.columns else 'FAMILIA'
-    fam_col_inv = 'FAMILIA_CLEAN' if 'FAMILIA_CLEAN' in df_inv.columns else 'FAMILIA'
-
-    # --- 3. BOTÓN DE ACTIVACIÓN DEL MOTOR ---
-    if st.button("🚀 Ejecutar Optimización de Asignación"):
+    # --- 2. VERIFICACIÓN DE COLUMNAS CRÍTICAS ---
+    columnas_requeridas = ['INV', 'PLAN_INS_DIA1', 'PLAN_INSIDE']
+    # Intentar detectar la columna de demanda (puede llamarse CANTIDAD, CANTIDAD_REQUERIDA o TOTAL)
+    col_demanda = next((c for c in columnas if 'REQUERIDA' in c.upper() or 'CANTIDAD' in c.upper() or 'TOTAL' in c.upper()), None)
+    
+    # Validar que existan las columnas en el archivo subido
+    missing_cols = [c for c in columnas_requeridas if c not in columnas]
+    
+    if missing_cols:
+        st.error(f"❌ Al archivo le faltan las siguientes columnas esenciales de suministro: {missing_cols}")
+    elif not col_demanda:
+        st.error("❌ No se detectó la columna de demanda (ej. 'CANTIDAD_REQUERIDA' o 'CANTIDAD').")
+    else:
+        st.info(f"Columna de demanda detectada: `{col_demanda}`")
         
-        with st.spinner("Procesando asignación multimétodo..."):
-            # Inicializar columnas de control
-            df_detalle['CANTIDAD_ASIGNADA'] = 0.0
-            df_detalle['ESCENARIO_ASIGNADO'] = 'SIN ASIGNAR'
-            
-            # --- CAPA 1: Inventario Físico Disponible (Match Exacto) ---
-            inv_disponibilidad = df_inv.groupby(link_col_inv)['CANTIDAD_LIBRE'].sum().to_dict()
-            
-            for idx, row in df_detalle.iterrows():
-                key = row[link_col_det]
-                cant_req = row['CANTIDAD_REQUERIDA'] if 'CANTIDAD_REQUERIDA' in df_detalle.columns else row.get('CANTIDAD', 0)
+        # --- 3. BOTÓN DE ACTIVACIÓN DEL MOTOR ---
+        if st.button("🚀 Ejecutar Optimización de Asignación"):
+            with st.spinner("Procesando heurística de asignación industrial..."):
                 
-                if key in inv_disponibilidad and inv_disponibilidad[key] > 0:
-                    asignado = min(cant_req, inv_disponibilidad[key])
-                    inv_disponibilidad[key] -= asignado
-                    df_detalle.at[idx, 'CANTIDAD_ASIGNADA'] = asignado
-                    df_detalle.at[idx, 'ESCENARIO_ASIGNADO'] = 'ESCENARIO 1: INVENTARIO'
-            
-            # --- CAPA 2: Plan Semanal (Flexibilización por Familia) ---
-            huerfanos_idx = df_detalle[df_detalle['ESCENARIO_ASIGNADO'] == 'SIN ASIGNAR'].index
-            
-            if fam_col_det in df_detalle.columns and fam_col_inv in df_inv.columns:
-                inv_familia_disp = df_inv.groupby(fam_col_inv)['CANTIDAD_LIBRE'].sum().to_dict()
+                # Inicializar variables de salida
+                df['CANTIDAD_ASIGNADA'] = 0.0
+                df['ESCENARIO_ASIGNADO'] = 'SIN ASIGNAR'
                 
-                for idx in huerfanos_idx:
-                    row = df_detalle.loc[idx]
-                    fam_key = row[fam_col_det]
-                    cant_req = row['CANTIDAD_REQUERIDA'] if 'CANTIDAD_REQUERIDA' in df_detalle.columns else row.get('CANTIDAD', 0)
-                    pendiente = cant_req - df_detalle.at[idx, 'CANTIDAD_ASIGNADA']
+                # Copias de las columnas de abasto para simular el consumo dinámico fila por fila
+                df['_inv_disp'] = df['INV'].fillna(0).astype(float)
+                df['_dia1_disp'] = df['PLAN_INS_DIA1'].fillna(0).astype(float)
+                df['_semanal_disp'] = df['PLAN_INSIDE'].fillna(0).astype(float)
+                df['_demanda_neta'] = df[col_demanda].fillna(0).astype(float)
+                
+                # --- MOTOR DE ASIGNACIÓN EN CASCADA (Fila por Fila) ---
+                for idx, row in df.iterrows():
+                    demanda = row['_demanda_neta']
+                    asignado = 0.0
                     
-                    if fam_key in inv_familia_disp and inv_familia_disp[fam_key] > 0:
-                        asignado = min(pendiente, inv_familia_disp[fam_key])
-                        inv_familia_disp[fam_key] -= asignado
-                        df_detalle.at[idx, 'CANTIDAD_ASIGNADA'] += asignado
-                        df_detalle.at[idx, 'ESCENARIO_ASIGNADO'] = 'ESCENARIO 3: PLAN SEMANAL FLEX'
+                    if demanda <= 0:
+                        df.at[idx, 'ESCENARIO_ASIGNADO'] = 'SIN DEMANDA'
+                        continue
+                    
+                    # Criterio 1: Asignar contra INVENTARIO (Físico inmediato)
+                    if row['_inv_disp'] >= demanda:
+                        asignado = demanda
+                        df.at[idx, 'CANTIDAD_ASIGNADA'] = asignado
+                        df.at[idx, 'ESCENARIO_ASIGNADO'] = 'ESCENARIO 1: INVENTARIO'
+                        continue  # Satisfecho al 100%
+                        
+                    # Criterio 2: Asignar contra INVENTARIO + PLAN_INS_DIA1
+                    elif (row['_inv_disp'] + row['_dia1_disp']) >= demanda:
+                        asignado = demanda
+                        df.at[idx, 'CANTIDAD_ASIGNADA'] = asignado
+                        df.at[idx, 'ESCENARIO_ASIGNADO'] = 'ESCENARIO 2: INV + PLAN 1 DÍA'
+                        continue
+                        
+                    # Criterio 3: Asignar contra INVENTARIO + PLAN_INS_DIA1 + PLAN_INSIDE
+                    elif (row['_inv_disp'] + row['_dia1_disp'] + row['_semanal_disp']) >= demanda:
+                        asignado = demanda
+                        df.at[idx, 'CANTIDAD_ASIGNADA'] = asignado
+                        df.at[idx, 'ESCENARIO_ASIGNADO'] = 'ESCENARIO 3: INV + PLAN SEMANAL'
+                        continue
+                    
+                    # Si no cubre con ninguno de los tres escenarios, se va parcial o se queda huérfano
+                    else:
+                        disponibilidad_total = row['_inv_disp'] + row['_dia1_disp'] + row['_semanal_disp']
+                        if disponibilidad_total > 0:
+                            df.at[idx, 'CANTIDAD_ASIGNADA'] = disponibilidad_total
+                            df.at[idx, 'ESCENARIO_ASIGNADO'] = 'ASIGNACIÓN PARCIAL INSUFICIENTE'
+                        else:
+                            df.at[idx, 'CANTIDAD_ASIGNADA'] = 0.0
+                            df.at[idx, 'ESCENARIO_ASIGNADO'] = 'SIN ASIGNAR (HUÉRFANO)'
 
-        # --- 4. SECCIÓN DE DASHBOARD Y MÉTRICAS CONTRA EL 60% ---
-        df_reporte = df_detalle[df_detalle['ESCENARIO_ASIGNADO'] != 'SIN ASIGNAR']
-        df_huerfanos = df_detalle[df_detalle['ESCENARIO_ASIGNADO'] == 'SIN ASIGNAR']
-        
-        total_filas = len(df_detalle)
-        total_asignados = len(df_reporte)
-        eficiencia = (total_asignados / total_filas) * 100 if total_filas > 0 else 0
-
-        st.success("🎯 ¡Optimización completada con éxito!")
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric(label="Eficiencia General de Asignación", value=f"{eficiencia:.2f}%", delta=f"{eficiencia - 40.0:.2f}% vs Anterior")
-        col2.metric(label="Órdenes Asignadas", value=f"{total_asignados} SKUs")
-        col3.metric(label="Huérfanos Restantes (Críticos)", value=f"{len(df_huerfanos)} SKUs")
-
-        # --- 5. DESCARGA DE RESULTADOS DESDE LA INTERFAZ ---
-        st.subheader("📥 Descarga de Reportes Generados")
-        col_down1, col_down2 = st.columns(2)
-        
-        csv_diagnostico = df_reporte.to_csv(index=False).encode('utf-8')
-        col_down1.download_button(
-            label="⬇️ Descargar Reporte de Asignados (Diagnóstico)",
-            data=csv_diagnostico,
-            file_name="NUEVO_REPORTE_DIAGNOSTICO.csv",
-            mime="text/csv"
-        )
-        
-        csv_huerfanos = df_huerfanos.to_csv(index=False).encode('utf-8')
-        col_down2.download_button(
-            label="⬇️ Descargar Nuevos Huérfanos",
-            data=csv_huerfanos,
-            file_name="NUEVO_REPORTE_HUERFANOS.csv",
-            mime="text/csv"
-        )
-        
-        # Muestra previa en pantalla
-        st.subheader("🔍 Vista Previa de Asignaciones")
-        st.dataframe(df_detalle[[link_col_det, 'CANTIDAD_ASIGNADA', 'ESCENARIO_ASIGNADO']].head(20))
-
+                # Limpieza de columnas temporales de cálculo
+                df.drop(columns=['_inv_disp', '_dia1_disp', '_semanal_disp', '_demanda_neta'], inplace=True)
+                
+            # --- 4. DASHBOARD DE RESULTADOS ---
+            st.success("🎯 ¡Proceso de simulación completado!")
+            
+            # Filtrado de resultados
+            df_asignados = df[~df['ESCENARIO_ASIGNADO'].isin(['SIN ASIGNAR (HUÉRFANO)', 'SIN DEMANDA'])]
+            df_huerfanos = df[df['ESCENARIO_ASIGNADO'] == 'SIN ASIGNAR (HUÉRFANO)']
+            
+            total_pedidos = len(df)
+            total_asignados = len(df_asignados)
+            eficiencia = (total_asignados / total_pedidos) * 100 if total_pedidos > 0 else 0
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric(label="Eficiencia de Cobertura", value=f"{eficiencia:.2f}%")
+            col2.metric(label="Registros Abastecidos", value=f"{total_asignados}")
+            col3.metric(label="Registros Huérfanos", value=f"{len(df_huerfanos)}")
+            
+            # --- 5. DESCARGA DE REPORTE INTEGRADO ---
+            st.subheader("📥 Descarga de Resultados")
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Descargar Reporte de Asignación Completo",
+                data=csv_data,
+                file_name="REPORTE_ASIGNACION_PROCESADO.csv",
+                mime="text/csv"
+            )
+            
+            # Vista previa
+            st.subheader("🔍 Vista Previa del Reporte Procesado")
+            columnas_vista = [col_demanda, 'INV', 'PLAN_INS_DIA1', 'PLAN_INSIDE', 'CANTIDAD_ASIGNADA', 'ESCENARIO_ASIGNADO']
+            st.dataframe(df[columnas_vista].head(50))
 else:
-    st.info("💡 Por favor, sube los archivos de DETALLE e INV_LIBRE en la barra lateral para iniciar el proceso.")
+    st.info("💡 Por favor, sube tu archivo CSV en la barra lateral que contenga las columnas de demanda e inventario/planes juntas.")
