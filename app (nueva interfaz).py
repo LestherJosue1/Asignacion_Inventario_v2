@@ -37,12 +37,12 @@ st.caption("Versión Optimizada: Asignación en Cascada Multicapa para Reducció
 st.sidebar.header("📁 Insumo Maestro")
 uploaded_file = st.sidebar.file_uploader("Subir Archivo de Asignación (.xlsx)", type=["xlsx"])
 
-def ejecutar_cascada_optimizada(df_detalle, col_demanda):
+def ejecutar_cascada_optimizada(df_WIP, col_demanda):
     """
     Motor de optimización senior: Evalúa fila por fila la disponibilidad integrada 
     en lugar de bloquear de forma masiva por capacidades agregadas.
     """
-    df = df_detalle.copy()
+    df = df_WIP.copy()
     df['CANTIDAD_ASIGNADA'] = 0.0
     df['ESCENARIO_ASIGNADO'] = 'SIN ASIGNAR (HUÉRFANO)'
     
@@ -96,7 +96,7 @@ def generar_excel_salida(df_resultado, df_config, df_resumen):
     """Genera el libro Excel respetando tus pestañas operativas estándar."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_resultado.to_excel(writer, sheet_name='DETALLE', index=False)
+        df_resultado.to_excel(writer, sheet_name='WIP', index=False)
         if df_config is not None:
             df_config.to_excel(writer, sheet_name='CONFIG', index=False)
         if df_resumen is not None:
@@ -118,14 +118,14 @@ if uploaded_file:
         df_config = pd.read_excel(uploaded_file, sheet_name='CONFIG', engine='openpyxl') if 'CONFIG' in hojas else None
         df_resumen = pd.read_excel(uploaded_file, sheet_name='RESUMEN', engine='openpyxl') if 'RESUMEN' in hojas else None
         
-        if 'DETALLE' not in hojas:
-            st.error("❌ Archivo inválido: Falta la pestaña fundamental 'DETALLE'.")
+        if 'WIP' not in hojas:
+            st.error("❌ Archivo inválido: Falta la pestaña fundamental 'WIP'.")
         else:
-            df_detalle = pd.read_excel(uploaded_file, sheet_name='DETALLE', engine='openpyxl')
+            df_WIP = pd.read_excel(uploaded_file, sheet_name='WIP', engine='openpyxl')
             st.success("🎯 Libro de Excel indexado correctamente.")
             
             # Autodetección inteligente de la columna de Demanda del modelo
-            col_demanda = 'LBS_C' if 'LBS_C' in df_detalle.columns else next((c for c in df_detalle.columns if 'REQUERIDA' in c.upper() or 'CANTIDAD' in c.upper() or 'LBS' in c.upper()), None)
+            col_demanda = 'LBS_C' if 'LBS_C' in df_WIP.columns else next((c for c in df_WIP.columns if 'REQUERIDA' in c.upper() or 'CANTIDAD' in c.upper() or 'LBS' in c.upper()), None)
             
             if not col_demanda:
                 st.error("❌ No se identificó la columna de demanda origen (Ej: LBS_C).")
@@ -133,7 +133,7 @@ if uploaded_file:
                 if st.button("🚀 Ejecutar Reingeniería de Asignación"):
                     with st.spinner("Procesando asignaciones en cascada lineal..."):
                         
-                        df_procesado = ejecutar_cascada_optimizada(df_detalle, col_demanda)
+                        df_procesado = ejecutar_cascada_optimizada(df_WIP, col_demanda)
                         
                         # --- CÓMPUTO DE MÉTRICAS DE CONTROL ---
                         total_lineas = len(df_procesado)
